@@ -18,6 +18,8 @@ package manager
 
 import (
 	"flag"
+	"fmt"
+	"path/filepath"
 	"time"
 
 	rvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/redis/v1beta2"
@@ -37,6 +39,7 @@ import (
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/k8sutils"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/monitoring"
 	coreWebhook "github.com/OT-CONTAINER-KIT/redis-operator/internal/webhook"
+	"github.com/natefinch/lumberjack"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"k8s.io/client-go/kubernetes"
@@ -61,6 +64,7 @@ type managerOptions struct {
 	enableWebhooks          bool
 	maxConcurrentReconciles int
 	featureGatesString      string
+	logFilePath             string
 	zapOptions              zap.Options
 }
 
@@ -97,6 +101,7 @@ func addFlags(cmd *cobra.Command, opts *managerOptions) {
 	cmd.Flags().BoolVar(&opts.enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	cmd.Flags().BoolVar(&opts.enableWebhooks, "enable-webhooks", envs.IsWebhookEnabled(), "Enable webhooks")
 	cmd.Flags().IntVar(&opts.maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Max concurrent reconciles")
+	cmd.Flags().StringVar(&opts.logFilePath, "logfilepath", "", "Absolute path to the log file. If empty, logs are written to standard error.")
 	cmd.Flags().StringVar(&opts.featureGatesString, "feature-gates", envs.GetFeatureGates(), "A set of key=value pairs that describe feature gates for alpha/experimental features. "+
 		"Options are:\n  GenerateConfigInInitContainer=true|false: enables using init container for config generation")
 	cmd.Flags().Duration(
@@ -119,7 +124,9 @@ func addFlags(cmd *cobra.Command, opts *managerOptions) {
 // runManager executes the main logic of the manager
 func runManager(opts *managerOptions) error {
 	// Setup logging
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts.zapOptions)))
+	if err := setupLogger(opts); err != nil {
+		return err
+	}
 
 	monitoring.RegisterRedisReplicationMetrics()
 	monitoring.RegisterRedisClusterMetrics()
@@ -167,6 +174,22 @@ func runManager(opts *managerOptions) error {
 		setupLog.Error(err, "problem running manager")
 		return err
 	}
+	return nil
+}
+
+func setupLogger(opts *managerOptions) error {
+	zapOpts := []zap.Opts{zap.UseFlagOptions(&opts.zapOptions)}
+	if opts.logFilePath != "" {
+		if !filepath.IsAbs(opts.logFilePath) {
+			return fmt.Errorf("logfilepath must be an absolute path: %s", opts.logFilePath)
+		}
+		zapOpts = append(zapOpts, zap.WriteTo(&lumberjack.Logger{
+			Filename:   opts.logFilePath,
+			MaxSize:    20,
+			MaxBackups: 20,
+		}))
+	}
+	ctrl.SetLogger(zap.New(zapOpts...))
 	return nil
 }
 

@@ -130,3 +130,5 @@ manager:
     kubeClientTimeout: 60s
     # -- If value > 0, it will override the default value in the operator
     kubeClientQPS: 0.0
+    # -- Absolute path to the operator log file. Empty keeps logging to standard error.
+    logFilePath: ""

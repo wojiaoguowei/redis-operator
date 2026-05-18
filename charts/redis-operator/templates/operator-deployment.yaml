@@ -65,6 +65,9 @@ spec:
         {{- if and .Values.manager.config.kubeClientQPS (gt (.Values.manager.config.kubeClientQPS | float64) 0.0) }}
         - --kube-client-qps={{ .Values.manager.config.kubeClientQPS }}
         {{- end }}
+        {{- if .Values.manager.config.logFilePath }}
+        - --logfilepath={{ .Values.manager.config.logFilePath }}
+        {{- end }}
         {{- range $arg := .Values.redisOperator.extraArgs }}
         - {{ $arg }}
         {{- end }}

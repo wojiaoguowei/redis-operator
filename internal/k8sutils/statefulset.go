@@ -119,6 +119,10 @@ type statefulSetParameters struct {
 	IgnoreAnnotations                    []string
 	HostNetwork                          bool
 	MinReadySeconds                      int32
+	// LocalPV indicates that the operator manages local PVs for this StatefulSet.
+	// When true, the VolumeClaimTemplate's storageClassName is forced to "" so that
+	// PVCs bind only to PVs that have no storage class (i.e., the operator-created ones).
+	LocalPV bool
 }
 
 // containerParameters will define container input params
@@ -336,7 +340,14 @@ func generateStatefulSetsDef(stsMeta metav1.ObjectMeta, params statefulSetParame
 	}
 	if containerParams.PersistenceEnabled != nil && *containerParams.PersistenceEnabled {
 		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stsMeta.GetName())
-		statefulset.Spec.VolumeClaimTemplates = append(statefulset.Spec.VolumeClaimTemplates, createPVCTemplate(pvcTplName, stsMeta, params.PersistentVolumeClaim))
+		pvcSpec := params.PersistentVolumeClaim
+		if params.LocalPV && pvcSpec.Spec.StorageClassName == nil {
+			// Force empty storageClassName so PVCs bind to operator-managed local PVs
+			// that also have storageClassName: "".
+			emptyStr := ""
+			pvcSpec.Spec.StorageClassName = &emptyStr
+		}
+		statefulset.Spec.VolumeClaimTemplates = append(statefulset.Spec.VolumeClaimTemplates, createPVCTemplate(pvcTplName, stsMeta, pvcSpec))
 	}
 	if params.ExternalConfig != nil {
 		statefulset.Spec.Template.Spec.Volumes = append(statefulset.Spec.Template.Spec.Volumes, getExternalConfig(*params.ExternalConfig)...)

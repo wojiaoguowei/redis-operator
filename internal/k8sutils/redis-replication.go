@@ -82,19 +82,33 @@ func CreateReplicationRedis(ctx context.Context, cr *rrvb2.RedisReplication, cl 
 	labels := getRedisLabels(cr.Name, replication, "replication", cr.Labels)
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(stateFulName, cr.Namespace, labels, annotations)
-
-	err := CreateOrUpdateStateFul(
+	params := generateRedisReplicationParams(cr)
+	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, cr.Name)
+	if err != nil {
+		return err
+	}
+	if useLocalPV {
+		params.LocalPV = true
+		replicas := cr.Spec.GetReplicationCounts("Replication")
+		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
+		if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
+			cr.Spec.Storage, replicas, stateFulName, pvcTplName,
+			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations),
+		); err != nil {
+			return err
+		}
+	}
+	if err = CreateOrUpdateStateFul(
 		ctx,
 		cl,
 		cr.GetNamespace(),
 		objectMetaInfo,
-		generateRedisReplicationParams(cr),
+		params,
 		redisReplicationAsOwner(cr),
 		generateRedisReplicationInitContainerParams(cr),
 		generateRedisReplicationContainerParams(cr),
 		cr.Spec.Sidecars,
-	)
-	if err != nil {
+	); err != nil {
 		log.FromContext(ctx).Error(err, "Cannot create replication statefulset for Redis")
 		return err
 	}

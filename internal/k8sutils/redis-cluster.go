@@ -290,12 +290,30 @@ func (service RedisClusterSTS) CreateRedisClusterSetup(ctx context.Context, cr *
 	labels["cluster"] = cr.Name
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(stateFulName, cr.Namespace, labels, annotations)
+	params := generateRedisClusterParams(ctx, cr, service.getReplicaCount(cr), service.ExternalConfig, service)
+	if cr.Spec.Storage != nil {
+		useLocalPV, err := ShouldUseLocalPV(ctx, cl, &cr.Spec.Storage.Storage, cr.Namespace, cr.Name)
+		if err != nil {
+			return err
+		}
+		if useLocalPV {
+			params.LocalPV = true
+			replicas := service.getReplicaCount(cr)
+			pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
+			if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
+				&cr.Spec.Storage.Storage, replicas, stateFulName, pvcTplName,
+				service.NodeSelector, derefTolerations(service.Tolerations),
+			); err != nil {
+				return err
+			}
+		}
+	}
 	err := CreateOrUpdateStateFul(
 		ctx,
 		cl,
 		cr.GetNamespace(),
 		objectMetaInfo,
-		generateRedisClusterParams(ctx, cr, service.getReplicaCount(cr), service.ExternalConfig, service),
+		params,
 		redisClusterAsOwner(cr),
 		generateRedisClusterInitContainerParams(cr),
 		generateRedisClusterContainerParams(ctx, cl, cr, service.SecurityContext, service.ReadinessProbe, service.LivenessProbe, service.RedisStateFulType, service.Resources),

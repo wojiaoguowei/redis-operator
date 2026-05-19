@@ -166,6 +166,13 @@ type Storage struct {
 	KeepAfterDelete     bool                         `json:"keepAfterDelete,omitempty"`
 	VolumeClaimTemplate corev1.PersistentVolumeClaim `json:"volumeClaimTemplate,omitempty"`
 	VolumeMount         AdditionalVolume             `json:"volumeMount,omitempty"`
+	// LocalPath is the base directory on each node for local PV storage.
+	// When set and no storageClassName is configured in VolumeClaimTemplate,
+	// and no default StorageClass exists in the cluster, the operator will
+	// automatically create and manage local PersistentVolumes.
+	// Each replica's PV will use <localPath>/<pvcName> as its host path.
+	// +optional
+	LocalPath string `json:"localPath,omitempty"`
 }
 
 // Additional Volume is provided by user that is mounted on the pods

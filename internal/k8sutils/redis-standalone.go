@@ -85,18 +85,32 @@ func CreateStandaloneRedis(ctx context.Context, cr *rvb2.Redis, cl kubernetes.In
 	labels := getRedisLabels(cr.Name, standalone, "standalone", cr.Labels)
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(cr.Name, cr.Namespace, labels, annotations)
-	err := CreateOrUpdateStateFul(
+	params := generateRedisStandaloneParams(cr)
+	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, cr.Name)
+	if err != nil {
+		return err
+	}
+	if useLocalPV {
+		params.LocalPV = true
+		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, cr.Name)
+		if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
+			cr.Spec.Storage, 1, cr.Name, pvcTplName,
+			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations),
+		); err != nil {
+			return err
+		}
+	}
+	if err = CreateOrUpdateStateFul(
 		ctx,
 		cl,
 		cr.GetNamespace(),
 		objectMetaInfo,
-		generateRedisStandaloneParams(cr),
+		params,
 		redisAsOwner(cr),
 		generateRedisStandaloneInitContainerParams(cr),
 		generateRedisStandaloneContainerParams(cr),
 		cr.Spec.Sidecars,
-	)
-	if err != nil {
+	); err != nil {
 		log.FromContext(ctx).Error(err, "Cannot create standalone statefulset for Redis")
 		return err
 	}

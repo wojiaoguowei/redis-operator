@@ -45,6 +45,10 @@ const (
 	RedisClusterFinalizer = "redisClusterFinalizer"
 )
 
+// +kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+
 // Reconciler reconciles a RedisCluster object
 type Reconciler struct {
 	client.Client

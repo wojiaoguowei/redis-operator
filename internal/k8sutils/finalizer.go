@@ -26,6 +26,9 @@ func HandleRedisFinalizer(ctx context.Context, ctrlclient client.Client, cr *rvb
 				if err := finalizeRedisPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}
+				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
+					return err
+				}
 			}
 			controllerutil.RemoveFinalizer(cr, finalizer)
 			if err := ctrlclient.Update(ctx, cr); err != nil {
@@ -45,6 +48,9 @@ func HandleRedisClusterFinalizer(ctx context.Context, ctrlclient client.Client, 
 				if err := finalizeRedisClusterPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}
+				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
+					return err
+				}
 			}
 			controllerutil.RemoveFinalizer(cr, finalizer)
 			if err := ctrlclient.Update(ctx, cr); err != nil {
@@ -62,6 +68,9 @@ func HandleRedisReplicationFinalizer(ctx context.Context, ctrlclient client.Clie
 		if controllerutil.ContainsFinalizer(cr, finalizer) {
 			if cr.Spec.Storage != nil && !cr.Spec.Storage.KeepAfterDelete {
 				if err := finalizeRedisReplicationPVC(ctx, ctrlclient, cr); err != nil {
+					return err
+				}
+				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
 					return err
 				}
 			}
@@ -166,6 +175,29 @@ func finalizeRedisReplicationPVC(ctx context.Context, client client.Client, cr *
 			log.FromContext(ctx).Error(err, "Could not delete Persistent Volume Claim "+PVCName)
 			return err
 		}
+	}
+	return nil
+}
+
+// deleteLocalPVs deletes all operator-managed local PVs for the given CR.
+// PVs are identified by the labels set during LocalPV creation.
+// Only called when keepAfterDelete == false.
+func deleteLocalPVs(ctx context.Context, cl client.Client, crName, namespace string) error {
+	pvList := &corev1.PersistentVolumeList{}
+	if err := cl.List(ctx, pvList, client.MatchingLabels{
+		labelLocalPVInstance: crName,
+		labelLocalPVNS:       namespace,
+	}); err != nil {
+		return fmt.Errorf("list local PVs for %s/%s: %w", namespace, crName, err)
+	}
+	logger := log.FromContext(ctx)
+	for i := range pvList.Items {
+		pv := &pvList.Items[i]
+		if err := cl.Delete(ctx, pv); err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "Could not delete local PV", "pv", pv.Name)
+			return err
+		}
+		logger.Info("Deleted local PV", "pv", pv.Name)
 	}
 	return nil
 }

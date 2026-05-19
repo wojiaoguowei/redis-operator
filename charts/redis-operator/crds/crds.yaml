@@ -3225,6 +3225,14 @@ spec:
                 properties:
                   keepAfterDelete:
                     type: boolean
+                  localPath:
+                    description: |-
+                      LocalPath is the base directory on each node for local PV storage.
+                      When set and no storageClassName is configured in VolumeClaimTemplate,
+                      and no default StorageClass exists in the cluster, the operator will
+                      automatically create and manage local PersistentVolumes.
+                      Each replica's PV will use <localPath>/<pvcName> as its host path.
+                    type: string
                   volumeClaimTemplate:
                     description: PersistentVolumeClaim is a user's request for and
                       claim to a persistent volume
@@ -10722,6 +10730,14 @@ spec:
                 properties:
                   keepAfterDelete:
                     type: boolean
+                  localPath:
+                    description: |-
+                      LocalPath is the base directory on each node for local PV storage.
+                      When set and no storageClassName is configured in VolumeClaimTemplate,
+                      and no default StorageClass exists in the cluster, the operator will
+                      automatically create and manage local PersistentVolumes.
+                      Each replica's PV will use <localPath>/<pvcName> as its host path.
+                    type: string
                   nodeConfVolume:
                     default: false
                     type: boolean
@@ -16765,6 +16781,14 @@ spec:
                 properties:
                   keepAfterDelete:
                     type: boolean
+                  localPath:
+                    description: |-
+                      LocalPath is the base directory on each node for local PV storage.
+                      When set and no storageClassName is configured in VolumeClaimTemplate,
+                      and no default StorageClass exists in the cluster, the operator will
+                      automatically create and manage local PersistentVolumes.
+                      Each replica's PV will use <localPath>/<pvcName> as its host path.
+                    type: string
                   volumeClaimTemplate:
                     description: PersistentVolumeClaim is a user's request for and
                       claim to a persistent volume

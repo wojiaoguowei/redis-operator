@@ -13,9 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sClientFake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
@@ -99,6 +101,101 @@ func TestStorageHasVolumeClaimTemplate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := storageHasVolumeClaimTemplate(tt.storage)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestShouldUseLocalPV(t *testing.T) {
+	ctx := context.Background()
+	localPVStorage := func() *common.Storage {
+		return &common.Storage{
+			LocalPath: "/mnt/redis",
+			VolumeClaimTemplate: corev1.PersistentVolumeClaim{
+				Spec: corev1.PersistentVolumeClaimSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			},
+		}
+	}
+	defaultSC := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "standard",
+			Annotations: map[string]string{
+				"storageclass.kubernetes.io/is-default-class": "true",
+			},
+		},
+	}
+	betaDefaultSC := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "standard",
+			Annotations: map[string]string{
+				"storageclass.beta.kubernetes.io/is-default-class": "true",
+			},
+		},
+	}
+	existingPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "default-data-redis-0",
+			Labels: map[string]string{
+				labelLocalPVInstance: "redis",
+				labelLocalPVNS:       "default",
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		storage *common.Storage
+		objects []runtime.Object
+		want    bool
+	}{
+		{
+			name: "nil storage",
+		},
+		{
+			name: "localPath without storage request",
+			storage: &common.Storage{
+				LocalPath: "/mnt/redis",
+				VolumeClaimTemplate: corev1.PersistentVolumeClaim{
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					},
+				},
+			},
+		},
+		{
+			name:    "storage request without default storage class",
+			storage: localPVStorage(),
+			want:    true,
+		},
+		{
+			name:    "default storage class blocks first time local pv",
+			storage: localPVStorage(),
+			objects: []runtime.Object{defaultSC},
+		},
+		{
+			name:    "beta default storage class blocks first time local pv",
+			storage: localPVStorage(),
+			objects: []runtime.Object{betaDefaultSC},
+		},
+		{
+			name:    "existing local pv keeps local pv mode with default storage class",
+			storage: localPVStorage(),
+			objects: []runtime.Object{defaultSC, existingPV},
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := k8sClientFake.NewSimpleClientset(tt.objects...)
+			got, err := ShouldUseLocalPV(ctx, cl, tt.storage, "default", "redis")
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

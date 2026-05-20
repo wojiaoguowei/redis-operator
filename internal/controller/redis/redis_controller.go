@@ -48,7 +48,7 @@ type Reconciler struct {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	instance := &rvb2.Redis{}
 
-	err := r.Get(context.TODO(), req.NamespacedName, instance)
+	err := r.Get(ctx, req.NamespacedName, instance)
 	if err != nil {
 		return intctrlutil.RequeueECheck(ctx, err, "failed to get redis instance")
 	}

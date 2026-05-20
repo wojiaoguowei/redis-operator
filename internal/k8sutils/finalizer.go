@@ -30,8 +30,7 @@ func HandleRedisFinalizer(ctx context.Context, ctrlclient client.Client, cr *rvb
 					return err
 				}
 			}
-			controllerutil.RemoveFinalizer(cr, finalizer)
-			if err := ctrlclient.Update(ctx, cr); err != nil {
+			if err := removeFinalizerWithConflictRetry(ctx, ctrlclient, cr, finalizer); err != nil {
 				log.FromContext(ctx).Error(err, "Could not remove finalizer", "finalizer", finalizer)
 				return err
 			}
@@ -52,12 +51,44 @@ func HandleRedisClusterFinalizer(ctx context.Context, ctrlclient client.Client, 
 					return err
 				}
 			}
-			controllerutil.RemoveFinalizer(cr, finalizer)
-			if err := ctrlclient.Update(ctx, cr); err != nil {
+			if err := removeFinalizerWithConflictRetry(ctx, ctrlclient, cr, finalizer); err != nil {
 				log.FromContext(ctx).Error(err, "Could not remove finalizer "+finalizer)
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func removeFinalizerWithConflictRetry(ctx context.Context, ctrlclient client.Client, obj client.Object, finalizer string) error {
+	controllerutil.RemoveFinalizer(obj, finalizer)
+	if err := ctrlclient.Update(ctx, obj); err != nil {
+		if !errors.IsConflict(err) {
+			return err
+		}
+
+		latest, ok := obj.DeepCopyObject().(client.Object)
+		if !ok {
+			return fmt.Errorf("deep copy object %T does not implement client.Object", obj)
+		}
+		if getErr := ctrlclient.Get(ctx, client.ObjectKeyFromObject(obj), latest); getErr != nil {
+			if errors.IsNotFound(getErr) {
+				return nil
+			}
+			return getErr
+		}
+		if !controllerutil.ContainsFinalizer(latest, finalizer) {
+			obj.SetFinalizers(latest.GetFinalizers())
+			obj.SetResourceVersion(latest.GetResourceVersion())
+			return nil
+		}
+
+		controllerutil.RemoveFinalizer(latest, finalizer)
+		if updateErr := ctrlclient.Update(ctx, latest); updateErr != nil {
+			return updateErr
+		}
+		obj.SetFinalizers(latest.GetFinalizers())
+		obj.SetResourceVersion(latest.GetResourceVersion())
 	}
 	return nil
 }
@@ -74,8 +105,7 @@ func HandleRedisReplicationFinalizer(ctx context.Context, ctrlclient client.Clie
 					return err
 				}
 			}
-			controllerutil.RemoveFinalizer(cr, finalizer)
-			if err := ctrlclient.Update(ctx, cr); err != nil {
+			if err := removeFinalizerWithConflictRetry(ctx, ctrlclient, cr, finalizer); err != nil {
 				log.FromContext(ctx).Error(err, "Could not remove finalizer "+finalizer)
 				return err
 			}
@@ -88,8 +118,7 @@ func HandleRedisReplicationFinalizer(ctx context.Context, ctrlclient client.Clie
 func HandleRedisSentinelFinalizer(ctx context.Context, ctrlclient client.Client, cr *rsvb2.RedisSentinel, finalizer string) error {
 	if cr.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(cr, finalizer) {
-			controllerutil.RemoveFinalizer(cr, finalizer)
-			if err := ctrlclient.Update(ctx, cr); err != nil {
+			if err := removeFinalizerWithConflictRetry(ctx, ctrlclient, cr, finalizer); err != nil {
 				log.FromContext(ctx).Error(err, "Could not remove finalizer "+finalizer)
 				return err
 			}

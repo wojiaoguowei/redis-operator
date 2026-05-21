@@ -166,7 +166,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	err = k8sutils.CreateRedisLeader(ctx, instance, r.K8sClient)
+	err = k8sutils.CreateRedisLeader(ctx, instance, r.K8sClient, r.Client)
 	if err != nil {
 		return intctrlutil.RequeueE(ctx, err, "")
 	}
@@ -206,7 +206,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				return intctrlutil.RequeueE(ctx, err, "")
 			}
 		}
-		err = k8sutils.CreateRedisFollower(ctx, instance, r.K8sClient)
+		err = k8sutils.CreateRedisFollower(ctx, instance, r.K8sClient, r.Client)
 		if err != nil {
 			return intctrlutil.RequeueE(ctx, err, "")
 		}

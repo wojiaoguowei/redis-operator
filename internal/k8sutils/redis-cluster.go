@@ -2,16 +2,20 @@ package k8sutils
 
 import (
 	"context"
+	"path"
 	"strconv"
 	"strings"
 
+	commonapi "github.com/OT-CONTAINER-KIT/redis-operator/api/common/v1beta2"
 	rcvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/rediscluster/v1beta2"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/util"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -34,6 +38,11 @@ type RedisClusterSTS struct {
 type RedisClusterService struct {
 	RedisServiceRole string
 }
+
+const (
+	defaultNodeConfLocalPVPathSuffix = "node-conf"
+	defaultNodeConfLocalPVSize       = "1Gi"
+)
 
 // generateRedisClusterParams generates Redis cluster information
 func generateRedisClusterParams(ctx context.Context, cr *rcvb2.RedisCluster, replicas int32, externalConfig *string, params RedisClusterSTS) statefulSetParameters {
@@ -222,7 +231,7 @@ func generateRedisClusterContainerParams(ctx context.Context, cl kubernetes.Inte
 }
 
 // CreateRedisLeader will create a leader redis setup
-func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface, ctrlClient client.Client) error {
 	prop := RedisClusterSTS{
 		RedisStateFulType:             "leader",
 		Resources:                     cr.Spec.GetRedisLeaderResources(),
@@ -239,11 +248,11 @@ func CreateRedisLeader(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernete
 	if cr.Spec.RedisLeader.RedisConfig != nil {
 		prop.ExternalConfig = cr.Spec.RedisLeader.RedisConfig.AdditionalRedisConfig
 	}
-	return prop.CreateRedisClusterSetup(ctx, cr, cl)
+	return prop.CreateRedisClusterSetup(ctx, cr, cl, ctrlClient)
 }
 
 // CreateRedisFollower will create a follower redis setup
-func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface, ctrlClient client.Client) error {
 	prop := RedisClusterSTS{
 		RedisStateFulType:             "follower",
 		Resources:                     cr.Spec.GetRedisFollowerResources(),
@@ -259,7 +268,7 @@ func CreateRedisFollower(ctx context.Context, cr *rcvb2.RedisCluster, cl kuberne
 	if cr.Spec.RedisFollower.RedisConfig != nil {
 		prop.ExternalConfig = cr.Spec.RedisFollower.RedisConfig.AdditionalRedisConfig
 	}
-	return prop.CreateRedisClusterSetup(ctx, cr, cl)
+	return prop.CreateRedisClusterSetup(ctx, cr, cl, ctrlClient)
 }
 
 // CreateRedisLeaderService method will create service for Redis Leader
@@ -282,8 +291,35 @@ func (service RedisClusterSTS) getReplicaCount(cr *rcvb2.RedisCluster) int32 {
 	return cr.Spec.GetReplicaCounts(service.RedisStateFulType)
 }
 
+func clusterPersistenceEnabled(cr *rcvb2.RedisCluster) bool {
+	return cr.Spec.PersistenceEnabled != nil && *cr.Spec.PersistenceEnabled
+}
+
+func buildNodeConfLocalPVStorage(clusterStorage *rcvb2.ClusterStorage) *commonapi.Storage {
+	if clusterStorage == nil || clusterStorage.Storage.LocalPath == "" || !clusterStorage.NodeConfVolume {
+		return nil
+	}
+
+	pvcTemplate := clusterStorage.NodeConfVolumeClaimTemplate
+	if len(pvcTemplate.Spec.AccessModes) == 0 {
+		pvcTemplate.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	}
+	if pvcTemplate.Spec.Resources.Requests == nil {
+		pvcTemplate.Spec.Resources.Requests = corev1.ResourceList{}
+	}
+	if _, ok := pvcTemplate.Spec.Resources.Requests[corev1.ResourceStorage]; !ok {
+		pvcTemplate.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse(defaultNodeConfLocalPVSize)
+	}
+
+	return &commonapi.Storage{
+		KeepAfterDelete:     clusterStorage.Storage.KeepAfterDelete,
+		VolumeClaimTemplate: pvcTemplate,
+		LocalPath:           path.Join(clusterStorage.Storage.LocalPath, defaultNodeConfLocalPVPathSuffix),
+	}
+}
+
 // CreateRedisClusterSetup will create Redis Setup for leader and follower
-func (service RedisClusterSTS) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface) error {
+func (service RedisClusterSTS) CreateRedisClusterSetup(ctx context.Context, cr *rcvb2.RedisCluster, cl kubernetes.Interface, ctrlClient client.Client) error {
 	stateFulName := cr.Name + "-" + service.RedisStateFulType
 	labels := getRedisLabels(stateFulName, cluster, service.RedisStateFulType, cr.Labels)
 	// add an common label for all pods in the cluster
@@ -291,20 +327,46 @@ func (service RedisClusterSTS) CreateRedisClusterSetup(ctx context.Context, cr *
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(stateFulName, cr.Namespace, labels, annotations)
 	params := generateRedisClusterParams(ctx, cr, service.getReplicaCount(cr), service.ExternalConfig, service)
+	replicas := service.getReplicaCount(cr)
 	if cr.Spec.Storage != nil {
-		useLocalPV, err := ShouldUseLocalPV(ctx, cl, &cr.Spec.Storage.Storage, cr.Namespace, cr.Name)
-		if err != nil {
-			return err
-		}
-		if useLocalPV {
-			params.LocalPV = true
-			replicas := service.getReplicaCount(cr)
-			pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
-			if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
-				&cr.Spec.Storage.Storage, replicas, stateFulName, pvcTplName,
-				service.NodeSelector, derefTolerations(service.Tolerations),
-			); err != nil {
+		persistencePVCTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
+		if clusterPersistenceEnabled(cr) {
+			useLocalPV, err := ShouldUseLocalPV(ctx, cl, &cr.Spec.Storage.Storage, cr.Namespace, stateFulName, persistencePVCTplName, replicas)
+			if err != nil {
 				return err
+			}
+			if useLocalPV {
+				params.LocalPV = true
+				if err := ReconcileLocalPVs(ctx, cl, ctrlClient, cr.Namespace, cr.Name,
+					&cr.Spec.Storage.Storage, replicas, stateFulName, persistencePVCTplName,
+					service.NodeSelector, derefTolerations(service.Tolerations), nil,
+				); err != nil {
+					return err
+				}
+			}
+		}
+
+		if cr.Spec.Storage.NodeConfVolume {
+			nodeConfStorage := buildNodeConfLocalPVStorage(cr.Spec.Storage)
+			nodeConfUseLocalPV, err := ShouldUseLocalPV(ctx, cl, nodeConfStorage, cr.Namespace, stateFulName, "node-conf", replicas)
+			if err != nil {
+				return err
+			}
+			if nodeConfUseLocalPV {
+				params.NodeConfLocalPV = true
+				var preferredNodes map[int]string
+				if params.LocalPV {
+					preferredNodes, err = getLocalPVNodesByReplica(ctx, cl, cr.Namespace, stateFulName, persistencePVCTplName, replicas)
+					if err != nil {
+						return err
+					}
+				}
+				if err := ReconcileLocalPVs(ctx, cl, ctrlClient, cr.Namespace, cr.Name,
+					nodeConfStorage, replicas, stateFulName, "node-conf",
+					service.NodeSelector, derefTolerations(service.Tolerations), preferredNodes,
+				); err != nil {
+					return err
+				}
 			}
 		}
 	}

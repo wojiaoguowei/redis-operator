@@ -77,23 +77,23 @@ func CreateReplicationService(ctx context.Context, cr *rrvb2.RedisReplication, c
 }
 
 // CreateReplicationRedis will create a replication redis setup
-func CreateReplicationRedis(ctx context.Context, cr *rrvb2.RedisReplication, cl kubernetes.Interface) error {
+func CreateReplicationRedis(ctx context.Context, cr *rrvb2.RedisReplication, cl kubernetes.Interface, ctrlClient client.Client) error {
 	stateFulName := cr.Name
 	labels := getRedisLabels(cr.Name, replication, "replication", cr.Labels)
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(stateFulName, cr.Namespace, labels, annotations)
 	params := generateRedisReplicationParams(cr)
-	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, cr.Name)
+	replicas := cr.Spec.GetReplicationCounts("Replication")
+	pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
+	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, stateFulName, pvcTplName, replicas)
 	if err != nil {
 		return err
 	}
 	if useLocalPV {
 		params.LocalPV = true
-		replicas := cr.Spec.GetReplicationCounts("Replication")
-		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stateFulName)
-		if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
+		if err := ReconcileLocalPVs(ctx, cl, ctrlClient, cr.Namespace, cr.Name,
 			cr.Spec.Storage, replicas, stateFulName, pvcTplName,
-			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations),
+			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations), nil,
 		); err != nil {
 			return err
 		}

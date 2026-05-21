@@ -8,6 +8,7 @@ import (
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/util"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -81,21 +82,21 @@ func CreateStandaloneService(ctx context.Context, cr *rvb2.Redis, cl kubernetes.
 }
 
 // CreateStandaloneRedis will create a standalone redis setup
-func CreateStandaloneRedis(ctx context.Context, cr *rvb2.Redis, cl kubernetes.Interface) error {
+func CreateStandaloneRedis(ctx context.Context, cr *rvb2.Redis, cl kubernetes.Interface, ctrlClient client.Client) error {
 	labels := getRedisLabels(cr.Name, standalone, "standalone", cr.Labels)
 	annotations := generateStatefulSetsAnots(cr.ObjectMeta, cr.Spec.KubernetesConfig.IgnoreAnnotations)
 	objectMetaInfo := generateObjectMetaInformation(cr.Name, cr.Namespace, labels, annotations)
 	params := generateRedisStandaloneParams(cr)
-	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, cr.Name)
+	pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, cr.Name)
+	useLocalPV, err := ShouldUseLocalPV(ctx, cl, cr.Spec.Storage, cr.Namespace, cr.Name, pvcTplName, 1)
 	if err != nil {
 		return err
 	}
 	if useLocalPV {
 		params.LocalPV = true
-		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, cr.Name)
-		if err := ReconcileLocalPVs(ctx, cl, cr.Namespace, cr.Name,
+		if err := ReconcileLocalPVs(ctx, cl, ctrlClient, cr.Namespace, cr.Name,
 			cr.Spec.Storage, 1, cr.Name, pvcTplName,
-			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations),
+			cr.Spec.NodeSelector, derefTolerations(cr.Spec.Tolerations), nil,
 		); err != nil {
 			return err
 		}

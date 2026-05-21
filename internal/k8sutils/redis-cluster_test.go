@@ -436,6 +436,33 @@ func Test_generateRedisClusterContainerParams(t *testing.T) {
 	assert.EqualValues(t, expectedFollowerContainer, actualFollowerContainer, "Expected %+v, got %+v", expectedFollowerContainer, actualFollowerContainer)
 }
 
+func TestBuildNodeConfLocalPVStorage(t *testing.T) {
+	t.Run("defaults missing node-conf pvc settings", func(t *testing.T) {
+		storage := buildNodeConfLocalPVStorage(&rcvb2.ClusterStorage{
+			NodeConfVolume: true,
+			Storage: common.Storage{
+				LocalPath: "/mnt/redis",
+			},
+		})
+
+		if assert.NotNil(t, storage) {
+			assert.Equal(t, "/mnt/redis/node-conf", storage.LocalPath)
+			assert.Equal(t, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, storage.VolumeClaimTemplate.Spec.AccessModes)
+			assert.Equal(t, resource.MustParse("1Gi"), storage.VolumeClaimTemplate.Spec.Resources.Requests[corev1.ResourceStorage])
+		}
+	})
+
+	t.Run("returns nil without local path or when disabled", func(t *testing.T) {
+		assert.Nil(t, buildNodeConfLocalPVStorage(&rcvb2.ClusterStorage{}))
+		assert.Nil(t, buildNodeConfLocalPVStorage(&rcvb2.ClusterStorage{
+			NodeConfVolume: true,
+			Storage: common.Storage{
+				LocalPath: "",
+			},
+		}))
+	})
+}
+
 func Test_generateRedisClusterInitContainerParams(t *testing.T) {
 	path := filepath.Join("..", "..", "tests", "testdata", "redis-cluster.yaml")
 	expected := initContainerParameters{

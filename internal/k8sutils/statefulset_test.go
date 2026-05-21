@@ -141,6 +141,11 @@ func TestShouldUseLocalPV(t *testing.T) {
 	existingPV := &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "default-data-redis-0",
+		},
+	}
+	otherNamespacePV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "other-data-redis-0",
 			Labels: map[string]string{
 				labelLocalPVInstance: "redis",
 				labelLocalPVNS:       "default",
@@ -189,16 +194,51 @@ func TestShouldUseLocalPV(t *testing.T) {
 			objects: []runtime.Object{defaultSC, existingPV},
 			want:    true,
 		},
+		{
+			name:    "pv existence check ignores unrelated labels and names",
+			storage: localPVStorage(),
+			objects: []runtime.Object{defaultSC, otherNamespacePV},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cl := k8sClientFake.NewSimpleClientset(tt.objects...)
-			got, err := ShouldUseLocalPV(ctx, cl, tt.storage, "default", "redis")
+			got, err := ShouldUseLocalPV(ctx, cl, tt.storage, "default", "redis", "data", 1)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestGenerateStatefulSetDefForNodeConfLocalPV(t *testing.T) {
+	sts := generateStatefulSetsDef(
+		metav1.ObjectMeta{Name: "cluster-leader", Namespace: "default", Labels: map[string]string{"app": "redis"}},
+		statefulSetParameters{
+			Replicas:          ptr.To(int32(1)),
+			ClusterMode:       true,
+			NodeConfVolume:    true,
+			NodeConfLocalPV:   true,
+			NodeConfPersistentVolumeClaim: corev1.PersistentVolumeClaim{
+				Spec: corev1.PersistentVolumeClaimSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			},
+		},
+		metav1.OwnerReference{Name: "cluster", Kind: "RedisCluster", APIVersion: "redis.redis.opstreelabs.in/v1beta2"},
+		initContainerParameters{},
+		containerParameters{PersistenceEnabled: ptr.To(false)},
+		nil,
+	)
+
+	require.Len(t, sts.Spec.VolumeClaimTemplates, 1)
+	require.Equal(t, "node-conf", sts.Spec.VolumeClaimTemplates[0].Name)
+	require.NotNil(t, sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName)
+	assert.Equal(t, "", *sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName)
 }
 
 func TestGeneratePreStopCommand(t *testing.T) {

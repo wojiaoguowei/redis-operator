@@ -123,6 +123,9 @@ type statefulSetParameters struct {
 	// When true, the VolumeClaimTemplate's storageClassName is forced to "" so that
 	// PVCs bind only to PVs that have no storage class (i.e., the operator-created ones).
 	LocalPV bool
+	// NodeConfLocalPV indicates that the node-conf VolumeClaimTemplate should bind
+	// to operator-managed local PVs with an explicit empty storageClassName.
+	NodeConfLocalPV bool
 }
 
 // containerParameters will define container input params
@@ -336,7 +339,12 @@ func generateStatefulSetsDef(stsMeta metav1.ObjectMeta, params statefulSetParame
 		statefulset.Spec.Template.Spec.ImagePullSecrets = *params.ImagePullSecrets
 	}
 	if containerParams.PersistenceEnabled != nil && params.ClusterMode && params.NodeConfVolume {
-		statefulset.Spec.VolumeClaimTemplates = append(statefulset.Spec.VolumeClaimTemplates, createPVCTemplate("node-conf", stsMeta, params.NodeConfPersistentVolumeClaim))
+		nodeConfPVCSpec := params.NodeConfPersistentVolumeClaim
+		if params.NodeConfLocalPV && nodeConfPVCSpec.Spec.StorageClassName == nil {
+			emptyStr := ""
+			nodeConfPVCSpec.Spec.StorageClassName = &emptyStr
+		}
+		statefulset.Spec.VolumeClaimTemplates = append(statefulset.Spec.VolumeClaimTemplates, createPVCTemplate("node-conf", stsMeta, nodeConfPVCSpec))
 	}
 	if containerParams.PersistenceEnabled != nil && *containerParams.PersistenceEnabled {
 		pvcTplName := util.CoalesceEnv1(common.EnvOperatorSTSPVCTemplateName, stsMeta.GetName())

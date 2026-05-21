@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"path/filepath"
+	"path"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	commonapi "github.com/OT-CONTAINER-KIT/redis-operator/api/common/v1beta2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -25,11 +29,26 @@ const (
 	labelLocalPVSTS      = "redis.opstreelabs.in/sts"
 	labelLocalPVIndex    = "redis.opstreelabs.in/replica-index"
 	labelRedisOperator   = "redis.opstreelabs.in"
+	generatePathAPIVersion = "test.com.cn/v1"
+	generatePathKind       = "GeneratePath"
+	generatePathLabelKey   = "graphdb2-cluster"
 )
 
-// ShouldUseLocalPV returns true when the CR requests local PV storage and either
-// no default StorageClass exists, or this CR already owns local PVs.
-func ShouldUseLocalPV(ctx context.Context, cl kubernetes.Interface, storage *commonapi.Storage, namespace, crName string) (bool, error) {
+type localPVReplica struct {
+	index   int
+	pvcName string
+	pvName  string
+}
+
+// ShouldUseLocalPV returns true when the target storage should bind to operator-managed
+// local PVs for the expected StatefulSet PVC names.
+func ShouldUseLocalPV(
+	ctx context.Context,
+	cl kubernetes.Interface,
+	storage *commonapi.Storage,
+	namespace, stsName, pvcTplName string,
+	replicas int32,
+) (bool, error) {
 	if storage == nil || storage.LocalPath == "" {
 		return false, nil
 	}
@@ -39,7 +58,7 @@ func ShouldUseLocalPV(ctx context.Context, cl kubernetes.Interface, storage *com
 	if storage.VolumeClaimTemplate.Spec.StorageClassName != nil {
 		return false, nil
 	}
-	existingLocalPVs, err := hasExistingLocalPVs(ctx, cl, namespace, crName)
+	existingLocalPVs, err := hasExpectedLocalPVs(ctx, cl, namespace, stsName, pvcTplName, replicas)
 	if err != nil {
 		return false, err
 	}
@@ -85,9 +104,11 @@ func storageHasStorageRequest(storage *commonapi.Storage) bool {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=test.com.cn,resources=generatepaths,verbs=get;list;watch;create;update;patch;delete
 func ReconcileLocalPVs(
 	ctx context.Context,
 	cl kubernetes.Interface,
+	ctrlClient ctrlclient.Client,
 	namespace string,
 	crName string,
 	storage *commonapi.Storage,
@@ -96,10 +117,11 @@ func ReconcileLocalPVs(
 	pvcTplName string,
 	nodeSelector map[string]string,
 	tolerations []corev1.Toleration,
+	preferredNodes map[int]string,
 ) error {
 	logger := log.FromContext(ctx).WithValues("cr", crName, "sts", stsName)
 
-	use, err := ShouldUseLocalPV(ctx, cl, storage, namespace, crName)
+	use, err := ShouldUseLocalPV(ctx, cl, storage, namespace, stsName, pvcTplName, replicas)
 	if err != nil {
 		return err
 	}
@@ -110,29 +132,15 @@ func ReconcileLocalPVs(
 	logger.Info("LocalPV mode active", "localPath", storage.LocalPath, "replicas", replicas)
 
 	// Determine which replica indices need new PVs.
-	existingNodes, err := getExistingLocalPVNodes(ctx, cl, crName, stsName)
+	existingNodes, err := getExistingLocalPVNodes(ctx, cl, namespace, stsName, pvcTplName, replicas)
 	if err != nil {
 		return err
 	}
 
-	// Build the full list of (index, pvcName) pairs.
-	type replicaInfo struct {
-		index   int
-		pvcName string
-		pvName  string
-	}
-	allReplicas := make([]replicaInfo, replicas)
-	for i := int32(0); i < replicas; i++ {
-		pvcName := buildLocalPVCName(pvcTplName, stsName, int(i))
-		allReplicas[i] = replicaInfo{
-			index:   int(i),
-			pvcName: pvcName,
-			pvName:  buildLocalPVName(namespace, pvcName),
-		}
-	}
+	allReplicas := buildLocalPVReplicas(namespace, stsName, pvcTplName, replicas)
 
 	// For replicas that are missing a PV, select nodes.
-	var needNodes []replicaInfo
+	var needNodes []localPVReplica
 	for _, ri := range allReplicas {
 		pv, err := cl.CoreV1().PersistentVolumes().Get(ctx, ri.pvName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -148,12 +156,22 @@ func ReconcileLocalPVs(
 
 	// Select nodes for replicas that need new PVs.
 	nodeAssignments := map[int]string{} // replica index → node name
-	if len(needNodes) > 0 {
-		selected, err := selectNodesForLocalPVs(ctx, cl, len(needNodes), nodeSelector, tolerations, existingNodes)
+	selectionExcludedNodes := copyNodeSet(existingNodes)
+	var remainingNeedNodes []localPVReplica
+	for _, ri := range needNodes {
+		if preferredNode := preferredNodes[ri.index]; preferredNode != "" {
+			nodeAssignments[ri.index] = preferredNode
+			selectionExcludedNodes[preferredNode] = struct{}{}
+			continue
+		}
+		remainingNeedNodes = append(remainingNeedNodes, ri)
+	}
+	if len(remainingNeedNodes) > 0 {
+		selected, err := selectNodesForLocalPVs(ctx, cl, len(remainingNeedNodes), nodeSelector, tolerations, selectionExcludedNodes)
 		if err != nil {
 			return fmt.Errorf("node selection for local PV: %w", err)
 		}
-		for i, ri := range needNodes {
+		for i, ri := range remainingNeedNodes {
 			nodeAssignments[ri.index] = selected[i]
 		}
 	}
@@ -161,7 +179,7 @@ func ReconcileLocalPVs(
 	// Run the state machine for each replica.
 	for _, ri := range allReplicas {
 		nodeName := nodeAssignments[ri.index] // empty string if PV already existed
-		if err := reconcileSingleLocalPV(ctx, cl, namespace, crName, stsName, ri.index, ri.pvName, ri.pvcName,
+		if err := reconcileSingleLocalPV(ctx, cl, ctrlClient, namespace, crName, stsName, ri.index, ri.pvName, ri.pvcName,
 			nodeName, storage, nodeSelector, tolerations, existingNodes,
 		); err != nil {
 			return fmt.Errorf("reconcile local PV for replica %d: %w", ri.index, err)
@@ -174,6 +192,7 @@ func ReconcileLocalPVs(
 func reconcileSingleLocalPV(
 	ctx context.Context,
 	cl kubernetes.Interface,
+	ctrlClient ctrlclient.Client,
 	namespace, crName, stsName string,
 	index int,
 	pvName, pvcName string,
@@ -201,7 +220,7 @@ func reconcileSingleLocalPV(
 	case pvMissing && pvcMissing:
 		// Normal first-time creation: create PV with claimRef pointing to the future PVC.
 		logger.Info("Creating local PV (first time)", "node", preselectedNode)
-		return createLocalPV(ctx, cl, pvName, namespace, pvcName, "", preselectedNode, index, crName, stsName, storage)
+		return createLocalPV(ctx, cl, ctrlClient, pvName, namespace, pvcName, "", preselectedNode, index, crName, stsName, storage)
 
 	case pvMissing && !pvcMissing:
 		// PV was deleted; PVC is in Lost state. Recreate PV and rebind using PVC UID.
@@ -211,7 +230,7 @@ func reconcileSingleLocalPV(
 		if err != nil {
 			return err
 		}
-		return createLocalPV(ctx, cl, pvName, namespace, pvcName, string(pvc.UID), nodeName, index, crName, stsName, storage)
+		return createLocalPV(ctx, cl, ctrlClient, pvName, namespace, pvcName, string(pvc.UID), nodeName, index, crName, stsName, storage)
 
 	case !pvMissing && pvcMissing:
 		// PVC was deleted; PV should be in Released state. Clear claimRef and recreate PVC.
@@ -244,20 +263,24 @@ func reconcileSingleLocalPV(
 func createLocalPV(
 	ctx context.Context,
 	cl kubernetes.Interface,
+	ctrlClient ctrlclient.Client,
 	pvName, namespace, pvcName, pvcUID string,
 	nodeName string,
 	index int,
 	crName, stsName string,
 	storage *commonapi.Storage,
 ) error {
-	hostPath := filepath.Join(storage.LocalPath, pvcName)
+	hostPath := path.Join(storage.LocalPath, pvcName)
 	capacity := storage.VolumeClaimTemplate.Spec.Resources.Requests
+	if err := ensureGeneratePath(ctx, ctrlClient, pvName, namespace, hostPath, capacity[corev1.ResourceStorage].String(), nodeName); err != nil {
+		return err
+	}
 
-	// Kubernetes Local volumes require the directory to already exist on the node.
+	// Ensure the node-side directory generator CR is present before the PV is created.
 	// The operator cannot create host directories — they must be pre-created by the
 	// node provisioning process or cluster administrator before the Pod is scheduled.
 	log.FromContext(ctx).Info(
-		"Creating local PV: ensure the directory exists on the target node before the Pod starts",
+		"Creating local PV after ensuring GeneratePath exists",
 		"node", nodeName, "hostPath", hostPath,
 	)
 
@@ -307,6 +330,108 @@ func createLocalPV(
 		return fmt.Errorf("create local PV %s: %w", pvName, err)
 	}
 	return nil
+}
+
+func ensureGeneratePath(ctx context.Context, ctrlClient ctrlclient.Client, pvName, namespace, localPath, size, nodeName string) error {
+	if ctrlClient == nil {
+		return fmt.Errorf("create GeneratePath %s/%s: controller-runtime client is nil", namespace, pvName)
+	}
+
+	desired := buildGeneratePathResource(pvName, namespace, localPath, size, nodeName)
+	current := &unstructured.Unstructured{}
+	current.SetAPIVersion(generatePathAPIVersion)
+	current.SetKind(generatePathKind)
+
+	err := ctrlClient.Get(ctx, ctrlclient.ObjectKeyFromObject(desired), current)
+	if apierrors.IsNotFound(err) {
+		if err := ctrlClient.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create GeneratePath %s/%s: %w", namespace, pvName, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get GeneratePath %s/%s: %w", namespace, pvName, err)
+	}
+
+	if reflect.DeepEqual(current.GetLabels(), desired.GetLabels()) && reflect.DeepEqual(current.Object["spec"], desired.Object["spec"]) {
+		return nil
+	}
+
+	current.SetLabels(desired.GetLabels())
+	current.Object["spec"] = desired.Object["spec"]
+	if err := ctrlClient.Update(ctx, current); err != nil {
+		return fmt.Errorf("update GeneratePath %s/%s: %w", namespace, pvName, err)
+	}
+	return nil
+}
+
+func buildGeneratePathResource(pvName, namespace, localPath, size, nodeName string) *unstructured.Unstructured {
+	mountPoint := mountPointFromLocalPath(localPath)
+	parentPath := path.Dir(localPath)
+
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": generatePathAPIVersion,
+			"kind":       generatePathKind,
+			"metadata": map[string]interface{}{
+				"name":      pvName,
+				"namespace": namespace,
+				"labels": map[string]interface{}{
+					generatePathLabelKey: pvName,
+				},
+			},
+			"spec": map[string]interface{}{
+				"fileDirs": []interface{}{
+					map[string]interface{}{
+						"path":       localPath,
+						"dirMaxSize": size,
+						"mountPoint": mountPoint,
+						"fileMode":   "0750",
+					},
+					map[string]interface{}{
+						"path":       parentPath,
+						"dirMaxSize": size,
+						"mountPoint": mountPoint,
+						"fileMode":   "0750",
+					},
+				},
+				"affinity": map[string]interface{}{
+					"nodeAffinity": map[string]interface{}{
+						"requiredDuringSchedulingIgnoredDuringExecution": map[string]interface{}{
+							"nodeSelectorTerms": []interface{}{
+								map[string]interface{}{
+									"matchExpressions": []interface{}{
+										map[string]interface{}{
+											"key":      "kubernetes.io/hostname",
+											"operator": "In",
+											"values": []interface{}{
+												nodeName,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func mountPointFromLocalPath(localPath string) string {
+	normalized := path.Clean(localPath)
+	parts := strings.Split(normalized, "/")
+	if len(parts) > 1 && parts[1] != "" {
+		return "/" + parts[1]
+	}
+	if normalized == "." || normalized == "" {
+		return "/"
+	}
+	if strings.HasPrefix(normalized, "/") {
+		return normalized
+	}
+	return "/" + normalized
 }
 
 func buildClaimRef(namespace, pvcName, pvcUID string) *corev1.ObjectReference {
@@ -378,38 +503,72 @@ func createBoundPVC(ctx context.Context, cl kubernetes.Interface, namespace, pvc
 
 // getExistingLocalPVNodes returns the set of node names already used by this
 // CR's StatefulSet's local PVs. Used to enforce strong anti-affinity.
-func getExistingLocalPVNodes(ctx context.Context, cl kubernetes.Interface, crName, stsName string) (map[string]struct{}, error) {
-	pvList, err := cl.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", labelLocalPVInstance, crName, labelLocalPVSTS, stsName),
-	})
+func getExistingLocalPVNodes(ctx context.Context, cl kubernetes.Interface, namespace, stsName, pvcTplName string, replicas int32) (map[string]struct{}, error) {
+	replicaNodes, err := getLocalPVNodesByReplica(ctx, cl, namespace, stsName, pvcTplName, replicas)
 	if err != nil {
-		return nil, fmt.Errorf("list existing local PVs: %w", err)
+		return nil, err
 	}
-	nodes := make(map[string]struct{})
-	for _, pv := range pvList.Items {
-		if pv.Spec.NodeAffinity != nil &&
-			pv.Spec.NodeAffinity.Required != nil &&
-			len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms) > 0 {
-			for _, expr := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions {
-				if expr.Key == "kubernetes.io/hostname" {
-					for _, v := range expr.Values {
-						nodes[v] = struct{}{}
-					}
-				}
-			}
-		}
+	nodes := make(map[string]struct{}, len(replicaNodes))
+	for _, nodeName := range replicaNodes {
+		nodes[nodeName] = struct{}{}
 	}
 	return nodes, nil
 }
 
-func hasExistingLocalPVs(ctx context.Context, cl kubernetes.Interface, namespace, crName string) (bool, error) {
-	pvList, err := cl.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", labelLocalPVInstance, crName, labelLocalPVNS, namespace),
-	})
-	if err != nil {
-		return false, fmt.Errorf("list existing local PVs: %w", err)
+func hasExpectedLocalPVs(ctx context.Context, cl kubernetes.Interface, namespace, stsName, pvcTplName string, replicas int32) (bool, error) {
+	for _, replica := range buildLocalPVReplicas(namespace, stsName, pvcTplName, replicas) {
+		_, err := cl.CoreV1().PersistentVolumes().Get(ctx, replica.pvName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("get existing local PV %s: %w", replica.pvName, err)
+		}
+		return true, nil
 	}
-	return len(pvList.Items) > 0, nil
+	return false, nil
+}
+
+func getLocalPVNodesByReplica(ctx context.Context, cl kubernetes.Interface, namespace, stsName, pvcTplName string, replicas int32) (map[int]string, error) {
+	replicaNodes := make(map[int]string)
+	for _, replica := range buildLocalPVReplicas(namespace, stsName, pvcTplName, replicas) {
+		pv, err := cl.CoreV1().PersistentVolumes().Get(ctx, replica.pvName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get existing local PV %s: %w", replica.pvName, err)
+		}
+		if nodeName := localPVNodeName(pv); nodeName != "" {
+			replicaNodes[replica.index] = nodeName
+		}
+	}
+	return replicaNodes, nil
+}
+
+func localPVNodeName(pv *corev1.PersistentVolume) string {
+	if pv == nil || pv.Spec.NodeAffinity == nil || pv.Spec.NodeAffinity.Required == nil {
+		return ""
+	}
+	for _, term := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key == "kubernetes.io/hostname" && len(expr.Values) > 0 {
+				return expr.Values[0]
+			}
+		}
+	}
+	return ""
+}
+
+func copyNodeSet(nodes map[string]struct{}) map[string]struct{} {
+	if len(nodes) == 0 {
+		return map[string]struct{}{}
+	}
+	out := make(map[string]struct{}, len(nodes))
+	for nodeName := range nodes {
+		out[nodeName] = struct{}{}
+	}
+	return out
 }
 
 // selectNodesForLocalPVs picks `count` eligible nodes for new local PVs.
@@ -529,6 +688,19 @@ func buildLocalPVCName(pvcTplName, stsName string, index int) string {
 // Format: <namespace>-<pvcName>
 func buildLocalPVName(namespace, pvcName string) string {
 	return fmt.Sprintf("%s-%s", namespace, pvcName)
+}
+
+func buildLocalPVReplicas(namespace, stsName, pvcTplName string, replicas int32) []localPVReplica {
+	allReplicas := make([]localPVReplica, replicas)
+	for i := int32(0); i < replicas; i++ {
+		pvcName := buildLocalPVCName(pvcTplName, stsName, int(i))
+		allReplicas[i] = localPVReplica{
+			index:   int(i),
+			pvcName: pvcName,
+			pvName:  buildLocalPVName(namespace, pvcName),
+		}
+	}
+	return allReplicas
 }
 
 // ── k8s spec helpers ─────────────────────────────────────────────────────────

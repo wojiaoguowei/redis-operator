@@ -64,7 +64,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err = k8sutils.AddFinalizer(ctx, instance, RedisFinalizer, r.Client); err != nil {
 		return intctrlutil.RequeueE(ctx, err, "failed to add finalizer")
 	}
-	err = k8sutils.CreateStandaloneRedis(ctx, instance, r.K8sClient)
+	err = k8sutils.CreateStandaloneRedis(ctx, instance, r.K8sClient, r.Client)
 	if err != nil {
 		return intctrlutil.RequeueE(ctx, err, "failed to create redis")
 	}

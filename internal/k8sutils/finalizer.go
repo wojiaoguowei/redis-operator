@@ -11,6 +11,7 @@ import (
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/env"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,7 +27,9 @@ func HandleRedisFinalizer(ctx context.Context, ctrlclient client.Client, cr *rvb
 				if err := finalizeRedisPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}
-				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
+				if err := deleteLocalPVArtifacts(ctx, ctrlclient, []string{
+					buildLocalPVName(cr.Namespace, fmt.Sprintf("%s-%s-0", env.GetString(common.EnvOperatorSTSPVCTemplateName, cr.Name), cr.Name)),
+				}, cr.Namespace); err != nil {
 					return err
 				}
 			}
@@ -47,7 +50,7 @@ func HandleRedisClusterFinalizer(ctx context.Context, ctrlclient client.Client, 
 				if err := finalizeRedisClusterPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}
-				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
+				if err := deleteLocalPVArtifacts(ctx, ctrlclient, redisClusterLocalPVNames(cr), cr.Namespace); err != nil {
 					return err
 				}
 			}
@@ -101,7 +104,7 @@ func HandleRedisReplicationFinalizer(ctx context.Context, ctrlclient client.Clie
 				if err := finalizeRedisReplicationPVC(ctx, ctrlclient, cr); err != nil {
 					return err
 				}
-				if err := deleteLocalPVs(ctx, ctrlclient, cr.Name, cr.Namespace); err != nil {
+				if err := deleteLocalPVArtifacts(ctx, ctrlclient, redisReplicationLocalPVNames(cr), cr.Namespace); err != nil {
 					return err
 				}
 			}
@@ -208,25 +211,63 @@ func finalizeRedisReplicationPVC(ctx context.Context, client client.Client, cr *
 	return nil
 }
 
-// deleteLocalPVs deletes all operator-managed local PVs for the given CR.
-// PVs are identified by the labels set during LocalPV creation.
-// Only called when keepAfterDelete == false.
-func deleteLocalPVs(ctx context.Context, cl client.Client, crName, namespace string) error {
-	pvList := &corev1.PersistentVolumeList{}
-	if err := cl.List(ctx, pvList, client.MatchingLabels{
-		labelLocalPVInstance: crName,
-		labelLocalPVNS:       namespace,
-	}); err != nil {
-		return fmt.Errorf("list local PVs for %s/%s: %w", namespace, crName, err)
-	}
+// deleteLocalPVArtifacts deletes the operator-managed local PV plus its paired
+// GeneratePath object. Only called when keepAfterDelete == false.
+func deleteLocalPVArtifacts(ctx context.Context, cl client.Client, pvNames []string, namespace string) error {
 	logger := log.FromContext(ctx)
-	for i := range pvList.Items {
-		pv := &pvList.Items[i]
+	for _, pvName := range pvNames {
+		pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: pvName}}
 		if err := cl.Delete(ctx, pv); err != nil && !errors.IsNotFound(err) {
-			logger.Error(err, "Could not delete local PV", "pv", pv.Name)
+			logger.Error(err, "Could not delete local PV", "pv", pvName)
 			return err
 		}
-		logger.Info("Deleted local PV", "pv", pv.Name)
+		logger.Info("Deleted local PV", "pv", pvName)
+		if err := cl.Delete(ctx, generatePathObject(namespace, pvName)); err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "Could not delete GeneratePath", "generatePath", pvName)
+			return err
+		}
+		logger.Info("Deleted GeneratePath", "generatePath", pvName)
 	}
 	return nil
+}
+
+func generatePathObject(namespace, name string) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion(generatePathAPIVersion)
+	obj.SetKind(generatePathKind)
+	obj.SetNamespace(namespace)
+	obj.SetName(name)
+	return obj
+}
+
+func redisReplicationLocalPVNames(cr *rrvb2.RedisReplication) []string {
+	pvcTemplateName := env.GetString(common.EnvOperatorSTSPVCTemplateName, cr.Name)
+	pvNames := make([]string, 0, cr.Spec.GetReplicationCounts("replication"))
+	for i := 0; i < int(cr.Spec.GetReplicationCounts("replication")); i++ {
+		pvcName := fmt.Sprintf("%s-%s-%d", pvcTemplateName, cr.Name, i)
+		pvNames = append(pvNames, buildLocalPVName(cr.Namespace, pvcName))
+	}
+	return pvNames
+}
+
+func redisClusterLocalPVNames(cr *rcvb2.RedisCluster) []string {
+	var pvNames []string
+	for _, role := range []string{"leader", "follower"} {
+		statefulSetName := fmt.Sprintf("%s-%s", cr.Name, role)
+		replicas := cr.Spec.GetReplicaCounts(role)
+		if cr.Spec.PersistenceEnabled != nil && *cr.Spec.PersistenceEnabled {
+			pvcTemplateName := env.GetString(common.EnvOperatorSTSPVCTemplateName, statefulSetName)
+			for i := 0; i < int(replicas); i++ {
+				pvcName := buildLocalPVCName(pvcTemplateName, statefulSetName, i)
+				pvNames = append(pvNames, buildLocalPVName(cr.Namespace, pvcName))
+			}
+		}
+		if cr.Spec.Storage.NodeConfVolume {
+			for i := 0; i < int(replicas); i++ {
+				pvcName := buildLocalPVCName("node-conf", statefulSetName, i)
+				pvNames = append(pvNames, buildLocalPVName(cr.Namespace, pvcName))
+			}
+		}
+	}
+	return pvNames
 }

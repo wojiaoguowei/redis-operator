@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -35,8 +36,19 @@ func TestHandleRedisClusterFinalizerRemovesFinalizerAndDeletesStorage(t *testing
 	ctx := context.Background()
 	cr := newDeletingRedisCluster("redis-cluster", false)
 	cr.Spec.Storage.NodeConfVolume = true
-	pv := newLocalPV("local-pv", cr.Name, cr.Namespace)
-	cl := newFinalizerTestClient(t, cr.DeepCopy(), append(redisClusterPVCs(cr), pv)...)
+	leaderPVName := buildLocalPVName(cr.Namespace, "node-conf-"+cr.Name+"-leader-0")
+	followerPVName := buildLocalPVName(cr.Namespace, "node-conf-"+cr.Name+"-follower-0")
+	cl := newFinalizerTestClient(
+		t,
+		cr.DeepCopy(),
+		append(
+			redisClusterPVCs(cr),
+			newLocalPV(leaderPVName, cr.Name, cr.Namespace),
+			newLocalPV(followerPVName, cr.Name, cr.Namespace),
+			newGeneratePath(leaderPVName, cr.Namespace),
+			newGeneratePath(followerPVName, cr.Namespace),
+		)...,
+	)
 
 	err := HandleRedisClusterFinalizer(ctx, cl, cr, testRedisClusterFinalizer)
 	require.NoError(t, err)
@@ -52,16 +64,22 @@ func TestHandleRedisClusterFinalizerRemovesFinalizerAndDeletesStorage(t *testing
 		assert.Truef(t, apierrors.IsNotFound(err), "expected PVC %s to be deleted, got %v", pvcName, err)
 	}
 
-	err = cl.Get(ctx, client.ObjectKey{Name: pv.GetName()}, &corev1.PersistentVolume{})
-	assert.Truef(t, apierrors.IsNotFound(err), "expected local PV to be deleted, got %v", err)
+	for _, pvName := range []string{leaderPVName, followerPVName} {
+		err = cl.Get(ctx, client.ObjectKey{Name: pvName}, &corev1.PersistentVolume{})
+		assert.Truef(t, apierrors.IsNotFound(err), "expected local PV %s to be deleted, got %v", pvName, err)
+		err = cl.Get(ctx, client.ObjectKey{Namespace: cr.Namespace, Name: pvName}, generatePathObject(cr.Namespace, pvName))
+		assert.Truef(t, apierrors.IsNotFound(err), "expected GeneratePath %s to be deleted, got %v", pvName, err)
+	}
 }
 
 func TestHandleRedisClusterFinalizerKeepAfterDeleteRemovesFinalizerOnly(t *testing.T) {
 	ctx := context.Background()
 	cr := newDeletingRedisCluster("redis-cluster", true)
 	pvc := redisClusterPVCs(cr)[0]
-	pv := newLocalPV("local-pv", cr.Name, cr.Namespace)
-	cl := newFinalizerTestClient(t, cr.DeepCopy(), pvc, pv)
+	pvName := buildLocalPVName(cr.Namespace, "node-conf-"+cr.Name+"-leader-0")
+	pv := newLocalPV(pvName, cr.Name, cr.Namespace)
+	gp := newGeneratePath(pvName, cr.Namespace)
+	cl := newFinalizerTestClient(t, cr.DeepCopy(), pvc, pv, gp)
 
 	err := HandleRedisClusterFinalizer(ctx, cl, cr, testRedisClusterFinalizer)
 	require.NoError(t, err)
@@ -69,6 +87,7 @@ func TestHandleRedisClusterFinalizerKeepAfterDeleteRemovesFinalizerOnly(t *testi
 
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: pvc.GetNamespace(), Name: pvc.GetName()}, &corev1.PersistentVolumeClaim{}))
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: pv.GetName()}, &corev1.PersistentVolume{}))
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: gp.GetNamespace(), Name: gp.GetName()}, generatePathObject(gp.GetNamespace(), gp.GetName())))
 }
 
 func TestHandleRedisClusterFinalizerNilStorageRemovesFinalizer(t *testing.T) {
@@ -343,6 +362,19 @@ func newLocalPV(name, crName, namespace string) client.Object {
 			Labels: map[string]string{
 				labelLocalPVInstance: crName,
 				labelLocalPVNS:       namespace,
+			},
+		},
+	}
+}
+
+func newGeneratePath(name, namespace string) client.Object {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": generatePathAPIVersion,
+			"kind":       generatePathKind,
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": namespace,
 			},
 		},
 	}

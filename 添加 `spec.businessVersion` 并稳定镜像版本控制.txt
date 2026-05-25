@@ -1,0 +1,246 @@
+# 添加 `spec.businessVersion` 并稳定镜像版本控制
+
+## 概述
+
+* 根本原因：StatefulSet 的更新是由 Pod Template 差异触发的，而不仅仅是 Redis 主容器镜像变化。在当前仓库中，Operator 升级可能会改变生成的 Pod Template 内容，例如：
+
+  * 来自 `INIT_CONTAINER_IMAGE` 的 `init-config` 镜像
+  * 传播到 CR 的 annotation
+  * Feature Gate 控制的 init container 行为
+
+  任何 Pod Template 的变化都会导致 Kubernetes 对 StatefulSet 执行滚动替换（rolling replacement）。
+
+* 为所有 v1beta2 Redis CRD 增加 `spec.businessVersion` 字段。
+  当该字段被设置时，Operator 会在构建 StatefulSet 前，自动重写 Redis/Sentinel 主镜像以及 Redis Exporter 镜像的 tag。
+
+* `businessVersion: latest` 将解析为 Operator 当前部署版本。
+  该版本通过新增环境变量 `OPERATOR_IMAGE_TAG` 在部署时注入。
+
+---
+
+## 关键改动
+
+* 在以下结构中新增可选字段：
+
+```go
+BusinessVersion string `json:"businessVersion,omitempty"`
+```
+
+新增位置：
+
+* `RedisSpec`
+* `RedisClusterSpec`
+* `RedisReplicationSpec`
+* `RedisSentinelSpec`
+
+---
+
+* 在 `internal/envs` 中新增对 `OPERATOR_IMAGE_TAG` 的支持。
+
+Helm 将设置：
+
+```yaml
+.Values.redisOperator.imageTag | default (printf "v%s" .Chart.AppVersion)
+```
+
+---
+
+* 新增统一镜像处理 helper，规则如下：
+
+### 规则
+
+* `businessVersion` 为空：
+
+  * 不修改镜像
+
+* `businessVersion == "latest"`：
+
+  * 使用 `OPERATOR_IMAGE_TAG`
+
+* 其它值：
+
+  * 使用指定版本字符串作为 tag
+
+---
+
+### 镜像处理逻辑
+
+仅替换镜像中的 tag 部分：
+
+* `repo/name:tag`
+  → 替换 tag
+
+* 无 tag：
+
+  ```text
+  repo/name
+  ```
+
+  → 自动追加：
+
+  ```text
+  repo/name:<version>
+  ```
+
+* digest 镜像：
+
+  ```text
+  repo/name@sha256:xxx
+  ```
+
+  → 删除 digest，并改为：
+
+  ```text
+  repo/name:<version>
+  ```
+
+---
+
+## 应用范围
+
+解析后的版本 tag 将应用于：
+
+* `spec.kubernetesConfig.image`
+* `spec.redisExporter.image`（存在 exporter 时）
+* `spec.sentinel.image`
+  （RedisReplication 内嵌 Sentinel 存在时）
+
+---
+
+## 不修改的内容
+
+以下镜像保持用户原配置不变：
+
+* 用户自定义 init container
+* sidecar
+* restore/backup 镜像
+* `imagePullPolicy`
+
+---
+
+## 自动生成文件
+
+需要执行：
+
+```bash
+make generate
+```
+
+更新 deepcopy 文件。
+
+---
+
+执行：
+
+```bash
+make manifests
+make sync-crds
+```
+
+更新：
+
+* CRD
+* Helm Chart CRD
+
+---
+
+更新四个 workload chart 的 Helm template：
+
+* 当设置 `businessVersion` 时，
+  在生成的 CR 中输出该字段。
+
+---
+
+新增 Helm values：
+
+```yaml
+businessVersion: ""
+```
+
+默认为空，保证现有安装行为完全不变。
+
+---
+
+## 测试
+
+新增镜像 tag 解析单元测试：
+
+### 覆盖场景
+
+* 空 `businessVersion`
+  → 镜像保持不变
+
+* 显式版本号
+  → 替换 Redis 与 Exporter tag
+
+* `latest`
+  → 使用 `OPERATOR_IMAGE_TAG`
+
+* 无 tag 镜像
+  → 自动追加 tag
+
+* digest 镜像
+  → 转换为 tag 形式
+
+---
+
+更新 controller/k8sutils 测试：
+
+* StatefulSet 预期镜像需要反映 `businessVersion`
+
+---
+
+如果已有 chart template 测试：
+
+* 增加或更新 CRD/sample rendering 校验
+
+---
+
+建议验证：
+
+```bash
+go test ./internal/envs ./internal/k8sutils ./internal/controller/... ./api/...
+```
+
+完整验证：
+
+```bash
+make test
+```
+
+前提是已刷新生成文件。
+
+---
+
+## 设计假设
+
+* `businessVersion` 属于业务工作负载版本，
+  因此仅影响：
+
+  * Redis / Sentinel
+  * Redis Exporter
+
+  不影响其它辅助镜像。
+
+---
+
+* `latest` 表示：
+
+```text
+与当前运行中的 Operator Deployment 使用相同 tag
+```
+
+该值来源于：
+
+```text
+OPERATOR_IMAGE_TAG
+```
+
+不会在运行时动态读取 Operator Pod 镜像。
+
+---
+
+* `businessVersion` 为空时：
+
+  * 保持当前行为
+  * 避免由于 Operator 升级导致 Redis Pod 意外重启

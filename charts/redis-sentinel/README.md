@@ -88,6 +88,7 @@ helm delete <my-release> --namespace <namespace>
 | redisExporter.resources | object | `{}` |  |
 | redisExporter.securityContext | object | `{}` |  |
 | redisExporter.tag | string | `"v1.44.0"` |  |
+| redisSentinel.businessVersion | string | `""` |  |
 | redisSentinel.clusterSize | int | `3` |  |
 | redisSentinel.ignoreAnnotations | list | `[]` |  |
 | redisSentinel.image | string | `"quay.io/opstree/redis-sentinel"` |  |

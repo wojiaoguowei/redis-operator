@@ -7,6 +7,7 @@ import (
 )
 
 type RedisSentinelSpec struct {
+	BusinessVersion string `json:"businessVersion,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=3
 	Size                          *int32                            `json:"clusterSize"`

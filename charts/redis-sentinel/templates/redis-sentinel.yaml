@@ -10,6 +10,9 @@ metadata:
     redis.opstreelabs.in/recreate-statefulset: "true"
     {{ end }}
 spec:
+  {{- if .Values.redisSentinel.businessVersion }}
+  businessVersion: {{ .Values.redisSentinel.businessVersion | quote }}
+  {{- end }}
   clusterSize: {{ .Values.redisSentinel.clusterSize }}
   # Sentinel Config
   redisSentinelConfig:

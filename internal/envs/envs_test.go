@@ -185,3 +185,11 @@ func TestGetFeatureGates(t *testing.T) {
 		})
 	}
 }
+
+func TestGetOperatorImageTag(t *testing.T) {
+	t.Setenv(OperatorImageTagEnv, "v0.24.0")
+
+	if got := GetOperatorImageTag(); got != "v0.24.0" {
+		t.Fatalf("GetOperatorImageTag() = %q, want %q", got, "v0.24.0")
+	}
+}

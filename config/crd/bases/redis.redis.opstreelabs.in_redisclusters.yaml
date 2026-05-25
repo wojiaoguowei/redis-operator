@@ -67,6 +67,8 @@ spec:
           spec:
             description: RedisClusterSpec defines the desired state of RedisCluster
             properties:
+              businessVersion:
+                type: string
               TLS:
                 description: TLS Configuration for redis instances
                 properties:

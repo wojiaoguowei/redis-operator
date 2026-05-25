@@ -13,6 +13,9 @@ metadata:
     redisclusters.redis.redis.opstreelabs.in/role-anti-affinity: "true"
     {{- end }}
 spec:
+  {{- if .Values.redisCluster.businessVersion }}
+  businessVersion: {{ .Values.redisCluster.businessVersion | quote }}
+  {{- end }}
   clusterSize: {{ .Values.redisCluster.clusterSize }}
   persistenceEnabled: {{ .Values.redisCluster.persistenceEnabled }}
   clusterVersion: {{ .Values.redisCluster.clusterVersion }}

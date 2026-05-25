@@ -24,6 +24,7 @@ import (
 
 // RedisClusterSpec defines the desired state of RedisCluster
 type RedisClusterSpec struct {
+	BusinessVersion string `json:"businessVersion,omitempty"`
 	// ClusterSize defines the default number of replicas for both leader and follower when not explicitly set
 	ClusterSize      *int32                  `json:"clusterSize"`
 	KubernetesConfig common.KubernetesConfig `json:"kubernetesConfig"`

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	rvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/redis/v1beta2"
+	"github.com/OT-CONTAINER-KIT/redis-operator/internal/businessversion"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/util"
 	"k8s.io/client-go/kubernetes"
@@ -168,7 +169,7 @@ func generateRedisStandaloneContainerParams(cr *rvb2.Redis) containerParameters 
 	falseProperty := false
 	containerProp := containerParameters{
 		Role:            "standalone",
-		Image:           cr.Spec.KubernetesConfig.Image,
+		Image:           businessversion.ResolveImage(cr.Spec.KubernetesConfig.Image, cr.Spec.BusinessVersion),
 		ImagePullPolicy: cr.Spec.KubernetesConfig.ImagePullPolicy,
 		Resources:       cr.Spec.KubernetesConfig.Resources,
 		SecurityContext: cr.Spec.SecurityContext,
@@ -194,7 +195,7 @@ func generateRedisStandaloneContainerParams(cr *rvb2.Redis) containerParameters 
 		containerProp.EnabledPassword = &falseProperty
 	}
 	if cr.Spec.RedisExporter != nil {
-		containerProp.RedisExporterImage = cr.Spec.RedisExporter.Image
+		containerProp.RedisExporterImage = businessversion.ResolveImage(cr.Spec.RedisExporter.Image, cr.Spec.BusinessVersion)
 		containerProp.RedisExporterImagePullPolicy = cr.Spec.RedisExporter.ImagePullPolicy
 
 		if cr.Spec.RedisExporter.Resources != nil {

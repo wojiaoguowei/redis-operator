@@ -38,6 +38,8 @@ spec:
           spec:
             description: RedisSpec defines the desired state of Redis
             properties:
+              businessVersion:
+                type: string
               TLS:
                 description: TLS Configuration for redis instances
                 properties:
@@ -5474,6 +5476,8 @@ spec:
           spec:
             description: RedisClusterSpec defines the desired state of RedisCluster
             properties:
+              businessVersion:
+                type: string
               TLS:
                 description: TLS Configuration for redis instances
                 properties:
@@ -13332,6 +13336,8 @@ spec:
             type: object
           spec:
             properties:
+              businessVersion:
+                type: string
               TLS:
                 description: TLS Configuration for redis instances
                 properties:
@@ -19195,6 +19201,8 @@ spec:
             type: object
           spec:
             properties:
+              businessVersion:
+                type: string
               TLS:
                 description: TLS Configuration for redis instances
                 properties:

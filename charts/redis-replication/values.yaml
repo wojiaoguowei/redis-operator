@@ -4,6 +4,7 @@ redisReplication:
   clusterSize: 3
   image: quay.io/opstree/redis
   tag: v7.0.15
+  businessVersion: ""
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
     # - name:  Secret with Registry credentials

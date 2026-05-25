@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	rrvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/redisreplication/v1beta2"
+	"github.com/OT-CONTAINER-KIT/redis-operator/internal/businessversion"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common/statefulset"
 	appsv1 "k8s.io/api/apps/v1"
@@ -73,7 +74,7 @@ func buildSentinelPodTemplate(rr *rrvb2.RedisReplication, labels map[string]stri
 func buildSentinelContainer(rr *rrvb2.RedisReplication) corev1.Container {
 	container := corev1.Container{
 		Name:            "sentinel",
-		Image:           rr.Spec.Sentinel.Image,
+		Image:           businessversion.ResolveImage(rr.Spec.Sentinel.Image, rr.Spec.BusinessVersion),
 		ImagePullPolicy: rr.Spec.Sentinel.ImagePullPolicy,
 		Ports: []corev1.ContainerPort{
 			{

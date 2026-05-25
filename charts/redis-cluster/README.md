@@ -69,6 +69,7 @@ helm delete <my-release> --namespace <namespace>
 | podSecurityContext.fsGroup | int | `1000` |  |
 | podSecurityContext.runAsUser | int | `1000` |  |
 | priorityClassName | string | `""` |  |
+| redisCluster.businessVersion | string | `""` |  |
 | redisCluster.clusterSize | int | `3` | Default number of replicas for both leader and follower when not explicitly set |
 | redisCluster.clusterVersion | string | `"v7"` |  |
 | redisCluster.enableMasterSlaveAntiAffinity | bool | `false` | Enable pod anti-affinity between leader and follower pods by adding the appropriate label.    Notice that this requires the operator to have its mutating webhook enabled,    otherwise it will only add an annotation to the RedisCluster CR.    Default is false. |

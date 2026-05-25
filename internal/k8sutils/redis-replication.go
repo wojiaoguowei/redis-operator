@@ -5,6 +5,7 @@ import (
 
 	rrvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/redisreplication/v1beta2"
 	rsvb2 "github.com/OT-CONTAINER-KIT/redis-operator/api/redissentinel/v1beta2"
+	"github.com/OT-CONTAINER-KIT/redis-operator/internal/businessversion"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/controller/common"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/util"
 	"github.com/OT-CONTAINER-KIT/redis-operator/internal/util/maps"
@@ -165,7 +166,7 @@ func generateRedisReplicationContainerParams(cr *rrvb2.RedisReplication) contain
 	falseProperty := false
 	containerProp := containerParameters{
 		Role:            "replication",
-		Image:           cr.Spec.KubernetesConfig.Image,
+		Image:           businessversion.ResolveImage(cr.Spec.KubernetesConfig.Image, cr.Spec.BusinessVersion),
 		ImagePullPolicy: cr.Spec.KubernetesConfig.ImagePullPolicy,
 		Resources:       cr.Spec.KubernetesConfig.Resources,
 		SecurityContext: cr.Spec.SecurityContext,
@@ -191,7 +192,7 @@ func generateRedisReplicationContainerParams(cr *rrvb2.RedisReplication) contain
 		containerProp.EnabledPassword = &falseProperty
 	}
 	if cr.Spec.RedisExporter != nil {
-		containerProp.RedisExporterImage = cr.Spec.RedisExporter.Image
+		containerProp.RedisExporterImage = businessversion.ResolveImage(cr.Spec.RedisExporter.Image, cr.Spec.BusinessVersion)
 		containerProp.RedisExporterImagePullPolicy = cr.Spec.RedisExporter.ImagePullPolicy
 		containerProp.RedisExporterSecurityContext = cr.Spec.RedisExporter.SecurityContext
 

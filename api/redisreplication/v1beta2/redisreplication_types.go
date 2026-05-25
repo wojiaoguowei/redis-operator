@@ -7,6 +7,7 @@ import (
 )
 
 type RedisReplicationSpec struct {
+	BusinessVersion               string                             `json:"businessVersion,omitempty"`
 	Size                          *int32                            `json:"clusterSize"`
 	KubernetesConfig              common.KubernetesConfig           `json:"kubernetesConfig"`
 	RedisExporter                 *common.RedisExporter             `json:"redisExporter,omitempty"`

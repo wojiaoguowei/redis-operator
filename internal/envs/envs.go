@@ -42,6 +42,9 @@ const (
 	// InitContainerImageEnv defines the image used for init containers
 	InitContainerImageEnv = "INIT_CONTAINER_IMAGE"
 
+	// OperatorImageTagEnv defines the running operator image tag
+	OperatorImageTagEnv = "OPERATOR_IMAGE_TAG"
+
 	// ServiceDNSDomain defines the DNS domain suffix for Kubernetes services
 	ServiceDNSDomain = "SERVICE_DNS_DOMAIN"
 )
@@ -58,6 +61,11 @@ func GetInitContainerImage() string {
 		initContainerImage = util.Coalesce(val, "quay.io/opstree/redis-operator:latest")
 	})
 	return initContainerImage
+}
+
+// GetOperatorImageTag returns the running operator image tag.
+func GetOperatorImageTag() string {
+	return os.Getenv(OperatorImageTagEnv)
 }
 
 // GetServiceDNSDomain returns the Kubernetes service DNS domain suffix.

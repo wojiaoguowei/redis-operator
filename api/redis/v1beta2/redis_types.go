@@ -27,6 +27,7 @@ import (
 
 // RedisSpec defines the desired state of Redis
 type RedisSpec struct {
+	BusinessVersion               string                     `json:"businessVersion,omitempty"`
 	KubernetesConfig              common.KubernetesConfig    `json:"kubernetesConfig"`
 	RedisExporter                 *common.RedisExporter      `json:"redisExporter,omitempty"`
 	RedisConfig                   *common.RedisConfig        `json:"redisConfig,omitempty"`

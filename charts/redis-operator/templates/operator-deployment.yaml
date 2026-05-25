@@ -97,6 +97,8 @@ spec:
         env:
         - name: INIT_CONTAINER_IMAGE
           value: {{ .Values.redisOperator.imageName }}:{{ .Values.redisOperator.initContainerImageTag | default .Values.redisOperator.imageTag | default (printf "v%s" .Chart.AppVersion) }}
+        - name: OPERATOR_IMAGE_TAG
+          value: {{ .Values.redisOperator.imageTag | default (printf "v%s" .Chart.AppVersion) | quote }}
         - name: ENABLE_WEBHOOKS
           value: {{ .Values.redisOperator.webhook | quote }}
         {{- if .Values.redisOperator.watchNamespace }}

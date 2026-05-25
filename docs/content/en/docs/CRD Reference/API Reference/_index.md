@@ -209,6 +209,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `businessVersion` _string_ |  |  |  |
 | `clusterSize` _integer_ | ClusterSize defines the default number of replicas for both leader and follower when not explicitly set |  |  |
 | `kubernetesConfig` _[KubernetesConfig](#kubernetesconfig)_ |  |  |  |
 | `hostNetwork` _boolean_ |  |  |  |
@@ -391,6 +392,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `businessVersion` _string_ |  |  |  |
 | `clusterSize` _integer_ |  |  |  |
 | `kubernetesConfig` _[KubernetesConfig](#kubernetesconfig)_ |  |  |  |
 | `redisExporter` _[RedisExporter](#redisexporter)_ |  |  |  |
@@ -474,6 +476,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `businessVersion` _string_ |  |  |  |
 | `clusterSize` _integer_ |  | 3 | Minimum: 1 <br /> |
 | `kubernetesConfig` _[KubernetesConfig](#kubernetesconfig)_ |  |  |  |
 | `redisExporter` _[RedisExporter](#redisexporter)_ |  |  |  |
@@ -511,6 +514,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `businessVersion` _string_ |  |  |  |
 | `kubernetesConfig` _[KubernetesConfig](#kubernetesconfig)_ |  |  |  |
 | `redisExporter` _[RedisExporter](#redisexporter)_ |  |  |  |
 | `redisConfig` _[RedisConfig](#redisconfig)_ |  |  |  |
